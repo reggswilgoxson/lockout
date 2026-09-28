@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/lockout"]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/reggswilgoxson/lockout"
+
+[workspace.dependencies]
+lockout-ai-core = { path = "crates/core", version = "0.1.0-dev" }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+# The regex engine is slow unoptimized, and the tests stream a lot of text through it.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

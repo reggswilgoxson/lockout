@@ -1,0 +1,36 @@
+Safety Data Sheet — Section 2: Hazard identification. Carc. 1B H350: May cause cancer. STOT RE 1 H372: Causes damage to organs (lungs, kidneys) through prolonged or repeated exposure. Cadmium, CAS 7440-43-9, EC 231-152-8. UN 2570, packing group II.
+
+Section 8: Exposure controls. OSHA PEL 0.005 mg/m3 TWA; ACGIH TLV 0.01 mg/m3 (inhalable), 0.002 mg/m3 (respirable). Use a NIOSH-approved respirator (TC-84A-4321) with P100 filters. Emergency: CHEMTREC 1-800-424-9300 is printed on every SDS.
+
+Q3 summary: 14 recordable injuries across 3 sites, TRIR 1.82 (target 1.50), DART 0.91, 1,245,300 hours worked. Needlestick injuries rose 12% versus Q2; hearing-conservation standard threshold shifts fell from 9 to 4. No fatalities.
+
+Lessons learned: a worker was pinched between the conveyor tail pulley and the belt during cleaning. Root cause: the isolation procedure (LOTO-PR-0047 rev 12) did not list the take-up counterweight as a stored-energy source. Corrective actions CA-2024-118 to CA-2024-121 are due 2024-11-30.
+
+Toolbox talk 2024-W41: heat illness. Water, rest, shade. Acclimatize new and returning workers over 7–14 days. Heat index 91–103 °F means moderate risk; above 103 °F, high risk. See OSHA 3154 and 29 CFR 1910.132.
+
+Standards referenced: ISO 45001:2018, ISO 14001:2015 clause 6.1.2, ANSI Z359.11-2021, NFPA 70E-2024 Table 130.5(C), EN 397:2012+A1:2012, 29 CFR 1904.7(b)(5), 40 CFR 262.17(a)(1)(iv), EU Directive 89/391/EEC and Regulation (EU) 2016/679.
+
+Equipment register: forklift FL-07 (serial 1234567890123), air compressor AC-3 inspected 15.03.2024, gas detector S/N 19-104-2231, calibration certificate 2024/0815/01, asset tags 100200300 through 100200450, PO 4500123456, invoice INV-2024-000123 for EUR 12,480.00.
+
+Air monitoring results: sample IDs 240915-01 to 240915-12; benzene 0.12 ppm, 0.08 ppm, <0.05 ppm; noise dosimetry 87.4 dBA TWA (8 h), 91.2 dBA peak location near press 4. GPS 40.7128, -74.0060. Wind 12 km/h NW.
+
+Contact the EHS help desk through the ticket portal, or email ehs@example.com for test messages only. The sandbox uses user@example.org and admin@test.test. For images use logo@2x.png and banner@3x.webp.
+
+```
+$ git clone git@github.com:acme/ehs-tools.git
+$ curl -H "X-Request-Id: 3f2c9a1e-8b7d-4c21-9f0e-5a6b7c8d9e0f" https://api.example.com/v2/incidents?since=2024-10-01T00:00:00Z
+{"id": 812734, "sha": "9b74c9897bac770ffc029102a200c5de", "version": "1.24.3", "ts": 1727512345678}
+docker pull ghcr.io/acme/lockout@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+Payments are tested with 4111 1111 1111 1111 and 4242 4242 4242 4242 in sandbox mode. Documentation examples: SSN 123-45-6789, NI number QQ 12 34 56 C, phone (555) 555-0142 and 555-0199.
+
+Training matrix: 312 of 340 employees completed HAZWOM 40-hour; 28 overdue. Confined-space entrants: 46. Respirator fit tests due: 17 in November, 22 in December. Medical surveillance appointments are scheduled through occupational health.
+
+Incident rates by year: 2019 2.41, 2020 2.13, 2021 1.98, 2022 1.87, 2023 1.79, 2024 1.82. Lost-time cases: 11, 9, 9, 7, 6, 7. Cost of claims: $1,204,000; $980,500; $1,015,300.
+
+Permit to work PTW-000451 (hot work) valid 06:00–18:00; gas test at 06:15 LEL 0%, O2 20.9%, H2S 0 ppm, CO 2 ppm. Fire watch for 60 minutes after completion. Job safety analysis JSA 24-0917.
+
+Phone tree drills: dial extension 4412 then press 2. Radio channel 7 for emergencies. Muster point B, grid ref TQ 30479 80939. Evacuation time 4 min 32 s for 118 people.
+
+The OSHA 300A summary must be posted from February 1 to April 30. Establishments with 20–249 employees in designated industries submit Form 300A electronically by March 2. Privacy concern cases are entered as "privacy case" instead of a name.

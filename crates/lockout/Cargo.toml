@@ -1,0 +1,20 @@
+[package]
+name = "lockout-ai"
+description = "lockout: lockout/tagout for AI output. Blocks or flags worker health and incident data in LLM response streams."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lockout"
+path = "src/main.rs"
+
+[dependencies]
+lockout-ai-core.workspace = true
+regex.workspace = true
+serde.workspace = true
+toml.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
