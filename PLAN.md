@@ -96,16 +96,16 @@ EHS teams already think in terms of need-to-know. Who will read this output?
 That is 8 Jev questions per segment.
 - Each question requires an **identifiable** worker. "Needlestick injuries rose 12% last quarter" is fine; "the new lab tech on nights had a needlestick" is not.
 - Each finding carries the citation strings from this table, so a WARN or BLOCK is explained in terms EHS reviewers recognize. The README states plainly that these are pointers, not legal advice.
-- Questions and citations live in `rules/ehs.toml`. Improving a question is a one-line pull request plus eval cases.
+- Questions and citations live in `crates/core/rules/ehs.toml`. Improving a question is a one-line pull request plus eval cases.
 
 ---
 
 ## 4. Key design decisions
 
 1. **Check before release.** Nothing reaches the reader until every check covering it has cleared it.
-2. **Segments with an overlap tail.** Segments are cut at a sentence or line boundary after `min` characters (240), at `max` (800), or at end of stream. The first segment uses `first_min` (60) so text appears quickly.
+2. **Segments with an overlap tail.** Segments are cut at a sentence or line boundary after `min` characters (240), at `max` (800), or at end of stream. The first segment uses `first_min` (100 bytes) so text appears quickly. It must exceed `overlap`, or nothing could be released.
 
-   When segment k clears, everything is released except its last `overlap` characters (96, extended back to the previous whitespace). That tail opens segment k+1. So an identifier split across a boundary is checked whole *before any of it leaves*. A property test enforces this.
+   When segment k clears, everything is released except its last `overlap` normalized bytes (64, moved back to a whitespace within 32 bytes). That tail opens segment k+1. So an identifier split across a boundary is checked whole *before any of it leaves*. A property test enforces this.
 3. **Subject memory.** Identifiability often spans sentences: "Maria Keller joined in March. … She is being treated for epilepsy." lockout keeps up to 3 short excerpts (200 characters or fewer) from earlier segments where a `person_identity`, `employee_ref` or `contact` finding fired. It sends them to Jev with each new segment, and nothing else from earlier text.
 4. **Pipelining.** Segment k's Jev call runs while segment k+1 accumulates. There are up to 4 calls per stream, with a process-wide limit for the proxy. Release is strictly in order. When the buffer is full, lockout back-pressures upstream; nothing is dropped.
 5. **Local rules block immediately,** without waiting for Jev.
@@ -206,8 +206,8 @@ lockout/
   LICENSE-APACHE, LICENSE-MIT  dual license (Rust norm); benchmark data CC-BY-4.0
   CONTRIBUTING.md              how to improve rules and add eval cases without writing Rust
   crates/core/                 no I/O: normalizer, local rules, segmenter, policy, frame parsers
+  crates/core/rules/ehs.toml   categories, Jev questions, citations, audience matrix, thresholds (ships inside the crate)
   crates/lockout/              package `lockout-ai`, binary `lockout`: Jev client (Decider trait), tokio I/O, proxy
-  rules/ehs.toml               categories, Jev questions, citations, audience matrix, thresholds
   bench/                       ehs-pii-bench: synthetic labelled EHS texts + recorded Jev answers
   fuzz/                        cargo-fuzz: frame parsers, normalizer
   Dockerfile                   distroless, one static binary
@@ -215,7 +215,7 @@ lockout/
 ```
 
 - **Dependencies:**
-  - **core:** `regex`, `unicode-normalization`, `serde`, `serde_json`, `thiserror`, `hmac`, `sha2`.
+  - **core:** `regex`, `unicode-normalization`, `serde`, `toml`, `hmac`, `sha2`.
   - **binary:** `clap`, `toml`, `tokio`, `reqwest` (rustls), `hyper-util`, `tracing`.
   - **Dev:** `proptest`, `wiremock`, `cargo-fuzz`.
 - **Windows builds matter.** A lot of EHS work happens on corporate Windows laptops.
@@ -241,7 +241,7 @@ Numeric targets are fixed at the end of Phase 0 from measured data.
 - Run them live, record the answers, and fit the thresholds.
 - **Acceptance:**
   - Per-category precision/recall and latency (p50/p95/p99) are published in `bench/RESULTS.md`.
-  - Thresholds are written into `rules/ehs.toml`.
+  - Thresholds are written into `crates/core/rules/ehs.toml`.
   - There is a go/no-go note, and the gates for Phases 1–4 are written here.
 
 ### Phase 1 — Core and local mode
@@ -250,6 +250,20 @@ Numeric targets are fixed at the end of Phase 0 from measured data.
   - Property test: splitting any positive at every byte and segment boundary still blocks, with zero bytes of the match released.
   - Validators pass published test vectors.
   - Hard-negative false positives are within the gate.
+- **Status: done.** Notes from building it:
+  - **Defaults changed.** `overlap` is 64 bytes, the longest context any local detector reads (a 44-byte MRZ line, or a keyword-gated ID). `first_min` is 100, because it must exceed `overlap` for anything to be released.
+  - **The guarantee has a size limit.** It covers identifiers up to `overlap` normalized bytes, which is every bounded detector. An email address longer than 64 bytes is still caught, but its first part may already have been released.
+  - **One `Guard` per output channel.** There is no channel parameter; Phase 3 gives text and tool arguments a `Guard` each.
+  - **The rules file ships with the crate,** at `crates/core/rules/ehs.toml`, so the core parses TOML itself.
+  - **Tests:**
+    - The every-byte split test is exhaustive and takes about a minute, so it is `#[ignore]`d locally and CI runs it with `--include-ignored`.
+    - Random chunkings are covered by `proptest`.
+    - The hard-negatives gate is zero findings at audience `public` on `crates/core/tests/fixtures/hard_negatives.txt`, until Phase 0 sets numeric gates.
+  - **Validators and allowlists.** Validators pass published or widely cited vectors: processor test cards, the ECBS IBAN examples, the ICAO 9303 specimen, and others. Two local allowlists were added during testing: documentation examples (such as `QQ 12 34 56 C` and `123-45-6789`) and NANP toll-free numbers.
+  - **Measured performance:**
+    - Local detection: 27 µs/KB mean and 46 µs/KB p99.
+    - End to end: about 68 µs/KB, because each overlap tail is scanned twice.
+    - Release binary: 2.6 MB.
 
 ### Phase 2 — Jev
 - Build the `Decider` and Jev client, pipelining, in-order release, subject memory, `on_error`, the circuit breaker, and `eval`.

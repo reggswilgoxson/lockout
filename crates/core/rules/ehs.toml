@@ -1,0 +1,83 @@
+# lockout EHS rules.
+#
+# Each category says what lockout does with a finding, per audience:
+#   investigation  the incident team, who may see names
+#   site           workforce-wide bulletins and chatbots (default)
+#   public         external reports, vendors, public copies
+#
+# `question` is what Jev is asked about each segment. Categories without one
+# are detected by local rules only. `citations` are pointers shown to
+# reviewers, not legal advice.
+#
+# Improving a question or a citation is a one-line pull request. Please add
+# eval cases in bench/ with it.
+
+version = 1
+
+[categories.privacy_case]
+question = "Does the text tie an identifiable worker to an injury of an intimate body part or the reproductive system, sexual assault, mental illness, HIV/hepatitis/TB, or a contaminated needlestick/sharps injury?"
+citations = ["29 CFR 1904.29(b)(7)", "GDPR Art. 9"]
+investigation = "warn"
+site = "block"
+public = "block"
+
+[categories.worker_health]
+question = "Does the text tie an identifiable worker to an injury, illness, medical exam or surveillance result (audiometry, spirometry, blood lead, fit-test medical evaluation), disability or restriction?"
+citations = ["29 CFR 1910.1020", "29 CFR 1630.14", "GDPR Art. 9"]
+investigation = "warn"
+site = "block"
+public = "block"
+
+[categories.substance_test]
+question = "Does the text reveal an identifiable worker's drug or alcohol test or its result?"
+citations = ["49 CFR 40.321", "GDPR Art. 9"]
+investigation = "warn"
+site = "block"
+public = "block"
+
+[categories.fault_or_discipline]
+question = "Does the text attribute blame, fault or disciplinary action to an identifiable worker?"
+citations = ["GDPR Art. 88"]
+investigation = "off"
+site = "warn"
+public = "block"
+
+[categories.other_special]
+question = "Does the text reveal an identifiable worker's trade-union membership, religion, ethnicity, sexual orientation, or criminal record?"
+citations = ["GDPR Art. 9", "GDPR Art. 10"]
+investigation = "warn"
+site = "block"
+public = "block"
+
+[categories.person_identity]
+question = "Does the text identify a specific private individual, by name or by details (role, shift, location, date) that single them out?"
+citations = ["29 CFR 1904.29(b)(10)", "GDPR Art. 4(1)"]
+investigation = "off"
+site = "warn"
+public = "block"
+
+[categories.employee_ref]
+question = "Does the text contain an employee number, badge ID or claim number?"
+citations = ["GDPR Art. 4(1)"]
+investigation = "off"
+site = "warn"
+public = "block"
+
+[categories.contact]
+question = "Does the text contain a personal email address or phone number?"
+citations = ["GDPR Art. 4(1)"]
+investigation = "warn"
+site = "block"
+public = "block"
+
+[categories.government_id]
+citations = ["GDPR Art. 87"]
+investigation = "block"
+site = "block"
+public = "block"
+
+[categories.financial]
+citations = ["GDPR Art. 4(1)"]
+investigation = "block"
+site = "block"
+public = "block"
