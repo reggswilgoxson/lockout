@@ -14,6 +14,13 @@
 
 version = 1
 
+# Default Jev probability thresholds. A category can set its own
+# `block_threshold` / `warn_threshold`. Placeholders until Phase 0 fits them
+# on the benchmark.
+[thresholds]
+block = 0.80
+warn = 0.50
+
 [categories.privacy_case]
 question = "Does the text tie an identifiable worker to an injury of an intimate body part or the reproductive system, sexual assault, mental illness, HIV/hepatitis/TB, or a contaminated needlestick/sharps injury?"
 citations = ["29 CFR 1904.29(b)(7)", "GDPR Art. 9"]

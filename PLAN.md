@@ -115,7 +115,7 @@ That is 8 Jev questions per segment.
    - Ollama: `{"error":"…"}`
 
    Then lockout closes upstream and exits with code 3.
-7. **Fail closed, fail fast.** If Jev errors or times out (1.2 s), the segment is blocked. The alternatives are `on_error = local-only | warn`. There is no retry mid-stream. A circuit breaker trips after 3 consecutive failures and re-probes every 30 s.
+7. **Fail closed, fail fast.** If Jev errors or times out (1.2 s), the segment is blocked. The alternative is `on_error = local-only`. There is no retry mid-stream. A circuit breaker trips after 3 consecutive failures and re-probes every 30 s.
 8. **Thresholds are calibrated once and shipped.** Jev's probabilities are calibrated, so a single `block_threshold` and `warn_threshold` per category are fitted on the benchmark in Phase 0 and shipped as defaults. Users change `audience`, not numbers. Per-category overrides exist but are undocumented in the quickstart.
 9. **Allowlists by default:**
    - RFC 2606/6761 example domains;
@@ -180,9 +180,12 @@ Config (`lockout.toml`; every key is optional):
 ```toml
 audience = "site"                         # investigation | site | public
 
+audience_table = "audience.toml"          # default: ./audience.toml if present
+
 [jev]
 api_key_env = "JEV_API_KEY"               # unset → local mode, with a notice
-on_error = "block"                        # block | local-only | warn
+url_env = "JEV_URL"                       # endpoint; no default, deliberately
+on_error = "block"                        # block | local-only
 
 [identifiers]                             # your formats → employee_ref
 employee_id = 'E\d{6}'
@@ -270,6 +273,25 @@ Numeric targets are fixed at the end of Phase 0 from measured data.
 - **Acceptance:**
   - A scripted Decider plus `wiremock` covers out-of-order verdicts, timeouts, and the breaker.
   - `lockout eval` meets the gates for every audience, including the indirect-identification and multi-segment cases.
+- **Status: built; the live acceptance check is still open.** Notes from building it:
+  - **Wiring.** `JEV_API_KEY` and `JEV_URL` are environment variables.
+    - There is no default endpoint: sending worker data to a guessed host would itself be a leak.
+    - The request and response shapes are the best available guess. They are isolated in `crates/lockout/src/jev/`, with the assumptions in `API.md`.
+    - An unreadable answer is treated as an error, never as "clean".
+  - **Audience table.** `audience.toml` at the repo root is the user-editable table, fully commented. It layers over the built-in rules; `[override]` in `lockout.toml` still wins. Typos are errors.
+  - **`on_error`.** It is `block | local-only`. `warn` was dropped because it behaved the same as `local-only`.
+  - **Subject memory.**
+    - Local contact and employee-ID matches contribute up to 200 bytes around the match.
+    - A Jev `person_identity` finding contributes the first 200 bytes of its segment.
+    - Segments already in flight don't see memory from their predecessors' verdicts, because requests are pipelined.
+  - **Deferred.** `global_inflight` moves to Phase 3, with the proxy; the CLI runs one stream per process.
+  - **Tests.**
+    - The core guard has unit tests and a property test (random chunking with verdicts answered in a random order gives byte-identical output).
+    - Nine end-to-end tests run the binary against a mock Jev: EHS block, auth header, out-of-order answers, timeout (exit 5), `local-only`, breaker (exactly 3 calls to a failing service), key without URL (exit 2), audience table, and `eval --record` then `--replay`.
+  - **Benchmark.** `bench/cases.jsonl` seeds `ehs-pii-bench` with 30 cases, unreviewed by a practitioner.
+    - The local-only baseline catches contact and IDs, with 0 false positives on the hard negatives.
+    - The EHS categories need a live Jev run, which is still open: it needs `JEV_API_KEY` and `JEV_URL`. The thresholds (0.80 / 0.50) are placeholders until then.
+  - **Binary size.** The release binary is 5.3 MB (was 2.6); the HTTP/TLS stack accounts for the difference. It uses the system trust store, so corporate TLS-inspecting proxies work.
 
 ### Phase 3 — Stream formats and proxy
 - Build the OpenAI, Anthropic, and Ollama parsers, tool-argument checking, native terminal errors, and the proxy.

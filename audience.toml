@@ -1,0 +1,106 @@
+# audience.toml — who may see what.
+#
+# This is the table to review with your EHS team. lockout reads it
+# automatically from the directory it runs in, or from next to the file passed
+# with --config. To use a different path, set `audience_table = "path"` in
+# lockout.toml. Delete a line to fall back to the built-in default for it.
+#
+# ── The three audiences ───────────────────────────────────────────────────────
+#   investigation   the incident team, who may see names
+#   site            workforce-wide bulletins and chatbots (the default)
+#   public          external reports, vendors, regulators' public copies
+# Pick one per run: `audience = "site"` in lockout.toml, or `--audience site`.
+#
+# ── What each cell can say ────────────────────────────────────────────────────
+#   "block"   stop the response before this reaches the reader (exit code 3)
+#   "warn"    let the response through, and report the finding
+#   "off"     ignore this category for this audience
+#
+# ── Thresholds (optional, per category) ───────────────────────────────────────
+# For the EHS categories, Jev returns a probability from 0 to 1. A finding
+#   blocks  when the cell says "block" and the probability ≥ block_threshold
+#   warns   when the probability ≥ warn_threshold (and the cell isn't "off")
+# Defaults: block_threshold = 0.80, warn_threshold = 0.50. They are
+# placeholders until the benchmark (bench/) is run against Jev. Leave them
+# unless you have measured. warn_threshold must not be above block_threshold.
+#
+# Local rules (IDs, card numbers, contact details, your employee-ID formats)
+# are exact matches, so thresholds don't apply to them.
+#
+# ── Precedence ────────────────────────────────────────────────────────────────
+# built-in rules  <  this file  <  [override] in lockout.toml (current audience only)
+#
+# Typos are errors: an unknown category, audience or action stops lockout
+# with a message naming the line.
+#
+# Citations are pointers for reviewers, not legal advice.
+
+# Intimate injuries, sexual assault, mental illness, HIV/hepatitis/TB,
+# contaminated sharps — tied to an identifiable worker.
+# 29 CFR 1904.29(b)(7), GDPR Art. 9
+[privacy_case]
+investigation = "warn"
+site = "block"
+public = "block"
+
+# Injury, illness, medical exam or surveillance results (audiometry,
+# spirometry, blood lead, fit-test medical evaluation), disability, restriction.
+# 29 CFR 1910.1020, 29 CFR 1630.14, GDPR Art. 9
+[worker_health]
+investigation = "warn"
+site = "block"
+public = "block"
+
+# A worker's drug or alcohol test, or its result.
+# 49 CFR 40.321, GDPR Art. 9
+[substance_test]
+investigation = "warn"
+site = "block"
+public = "block"
+
+# Blame, fault or disciplinary action attributed to an identifiable worker.
+# GDPR Art. 88; just-culture practice
+[fault_or_discipline]
+investigation = "off"
+site = "warn"
+public = "block"
+
+# Trade-union membership, religion, ethnicity, sexual orientation, criminal record.
+# GDPR Art. 9, Art. 10
+[other_special]
+investigation = "warn"
+site = "block"
+public = "block"
+
+# A specific private individual, by name or by details that single them out
+# ("the only forklift driver on night shift at Plant 3").
+# 29 CFR 1904.29(b)(10), GDPR Art. 4(1)
+[person_identity]
+investigation = "off"
+site = "warn"
+public = "block"
+
+# Employee numbers, badge IDs, claim numbers (your formats go in
+# [identifiers] in lockout.toml).
+[employee_ref]
+investigation = "off"
+site = "warn"
+public = "block"
+
+# Personal email addresses and phone numbers.
+[contact]
+investigation = "warn"
+site = "block"
+public = "block"
+
+# SSN, NINO, national IDs, passport numbers. Checked by local rules only.
+[government_id]
+investigation = "block"
+site = "block"
+public = "block"
+
+# Payment card numbers and IBANs. Checked by local rules only.
+[financial]
+investigation = "block"
+site = "block"
+public = "block"
