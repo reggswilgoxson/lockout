@@ -18,7 +18,7 @@ fn no_findings_on_hard_negatives() {
         .flat_map(|e| match e {
             Event::Warn(f) => vec![f.clone()],
             Event::Block(fs) => fs.clone(),
-            Event::Release(_) => vec![],
+            _ => vec![],
         })
         .map(|f| format!("{} {:?}", f.source, &CORPUS[f.start..f.end]))
         .collect();

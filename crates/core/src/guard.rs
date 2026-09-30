@@ -15,9 +15,17 @@
 //! from segment k is released until k has been checked. A match that touches
 //! the open end of a segment is not judged there; it lies inside the tail and is
 //! judged in the next segment, with its full context.
+//!
+//! With a decider (Jev) enabled, each checked segment also becomes a
+//! [`Event::SegmentReady`] carrying the questions to ask. Its text is held until
+//! [`Guard::verdict`] or [`Guard::decider_failed`] arrives for it, and segments are
+//! released strictly in order, whatever order their verdicts arrive in. The
+//! guard itself does no I/O: the caller runs the requests.
+
+use std::collections::VecDeque;
 
 use hmac::{Hmac, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::detect::{Detectors, MAX_CONTEXT};
@@ -80,6 +88,34 @@ pub struct Finding {
     pub fingerprint: Option<String>,
 }
 
+/// What to do when the decider cannot answer for a segment (timeout, error,
+/// circuit open).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnError {
+    /// Fail closed: stop the stream.
+    #[default]
+    Block,
+    /// Release the segment on the strength of the local rules, and say so.
+    LocalOnly,
+}
+
+pub type SegmentId = u64;
+
+/// What the decider is asked about one segment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeciderInput {
+    /// Excerpts from earlier in the response that identify someone (at most
+    /// three), followed by the segment itself.
+    pub state: String,
+    /// (category, question) for every category that has a question and is not `off`.
+    pub questions: Vec<(Category, String)>,
+}
+
+/// The decider's answer: a probability per category asked.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Verdict(pub Vec<(Category, f32)>);
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// Checked text, safe to pass on.
@@ -88,7 +124,29 @@ pub enum Event {
     Warn(Finding),
     /// Findings whose action is `block`. In `Filter` mode nothing more is released.
     Block(Vec<Finding>),
+    /// Ask the decider about this segment, then call [`Guard::verdict`] or
+    /// [`Guard::decider_failed`] with the same id.
+    SegmentReady(SegmentId, DeciderInput),
+    /// The decider could not answer. `fatal` (on_error = block) stops a
+    /// `Filter` stream; otherwise the segment was released on local rules only.
+    DeciderFailed { fatal: bool },
 }
+
+/// A checked segment waiting for its verdict.
+struct Pending {
+    id: SegmentId,
+    /// Text to release once cleared (may be empty for the tail-only last segment).
+    text: String,
+    /// The segment's window, for subject memory, and its stream range.
+    window: String,
+    start: usize,
+    end: usize,
+    verdict: Option<Verdict>,
+}
+
+/// How many earlier excerpts are kept, and how long each may be.
+const MEMORY_ITEMS: usize = 3;
+const MEMORY_BYTES: usize = 200;
 
 pub struct Guard {
     policy: Policy,
@@ -105,6 +163,12 @@ pub struct Guard {
     blocked: bool,
     /// Findings already reported, as (stream start, stream end, source).
     reported: Vec<(usize, usize, String)>,
+    /// `Some` when a decider is in use.
+    decider: Option<OnError>,
+    pending: VecDeque<Pending>,
+    next_id: SegmentId,
+    /// Excerpts that identify someone, sent to the decider with later segments.
+    memory: VecDeque<String>,
 }
 
 impl Guard {
@@ -128,11 +192,139 @@ impl Guard {
             first: true,
             blocked: false,
             reported: Vec::new(),
+            decider: None,
+            pending: VecDeque::new(),
+            next_id: 0,
+            memory: VecDeque::new(),
         })
+    }
+
+    /// Turns on decider mode: segments wait for a verdict before release.
+    pub fn with_decider(mut self, on_error: OnError) -> Guard {
+        self.decider = Some(on_error);
+        self
     }
 
     pub fn is_blocked(&self) -> bool {
         self.blocked
+    }
+
+    /// True when no segment is waiting for a verdict.
+    pub fn is_idle(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Bytes held back: buffered plus waiting for verdicts. Callers stop
+    /// reading input above their limit (back-pressure).
+    pub fn held_bytes(&self) -> usize {
+        self.buf.len() + self.pending.iter().map(|p| p.text.len()).sum::<usize>()
+    }
+
+    /// The decider's answer for a segment.
+    pub fn verdict(&mut self, id: SegmentId, verdict: Verdict) -> Vec<Event> {
+        let mut events = Vec::new();
+        self.verdict_inner(id, verdict, &mut events);
+        events
+    }
+
+    /// The decider could not answer for a segment.
+    pub fn decider_failed(&mut self, id: SegmentId) -> Vec<Event> {
+        let mut events = Vec::new();
+        if self.blocked || !self.pending.iter().any(|p| p.id == id) {
+            return events;
+        }
+        let fatal = self.decider == Some(OnError::Block);
+        events.push(Event::DeciderFailed { fatal });
+        if fatal && self.mode == Mode::Filter {
+            self.stop();
+            return events;
+        }
+        self.verdict_inner(id, Verdict::default(), &mut events);
+        events
+    }
+
+    fn verdict_inner(&mut self, id: SegmentId, verdict: Verdict, events: &mut Vec<Event>) {
+        if let Some(p) = self.pending.iter_mut().find(|p| p.id == id) {
+            p.verdict = Some(verdict);
+            self.flush(events);
+        }
+    }
+
+    fn stop(&mut self) {
+        self.blocked = true;
+        self.buf.clear();
+        self.pending.clear();
+    }
+
+    /// Releases, in order, every leading segment that has its verdict.
+    fn flush(&mut self, events: &mut Vec<Event>) {
+        while self.pending.front().is_some_and(|p| p.verdict.is_some()) {
+            let p = self.pending.pop_front().expect("front exists");
+            let verdict = p.verdict.clone().unwrap_or_default();
+            let mut blocks = Vec::new();
+            for (category, probability) in verdict.0 {
+                let action = self.policy.action(category);
+                let (block_at, warn_at) = self.policy.thresholds(category);
+                let outcome = if action == Action::Off || probability < warn_at {
+                    continue;
+                } else if action == Action::Block && probability >= block_at {
+                    Action::Block
+                } else {
+                    Action::Warn
+                };
+                if category == Category::PersonIdentity {
+                    self.remember(&p.window);
+                }
+                let finding = Finding {
+                    action: outcome,
+                    category,
+                    source: "jev".into(),
+                    start: p.start,
+                    end: p.end,
+                    probability: Some(probability),
+                    citations: self.policy.citations(category).to_vec(),
+                    fingerprint: None,
+                };
+                match outcome {
+                    Action::Block => blocks.push(finding),
+                    _ => events.push(Event::Warn(finding)),
+                }
+            }
+            if !blocks.is_empty() {
+                events.push(Event::Block(blocks));
+                if self.mode == Mode::Filter {
+                    self.stop();
+                    return;
+                }
+            }
+            if !p.text.is_empty() {
+                events.push(Event::Release(p.text));
+            }
+        }
+    }
+
+    fn remember(&mut self, excerpt: &str) {
+        let excerpt = excerpt.trim();
+        let mut end = excerpt.len().min(MEMORY_BYTES);
+        while !excerpt.is_char_boundary(end) {
+            end -= 1;
+        }
+        let excerpt = &excerpt[..end];
+        if excerpt.is_empty() || self.memory.iter().any(|m| m.contains(excerpt) || excerpt.contains(m.as_str())) {
+            return;
+        }
+        if self.memory.len() == MEMORY_ITEMS {
+            self.memory.pop_front();
+        }
+        self.memory.push_back(excerpt.to_string());
+    }
+
+    fn decider_state(&self, window: &str) -> String {
+        if self.memory.is_empty() {
+            return window.to_string();
+        }
+        let earlier: Vec<String> = self.memory.iter().map(|m| format!("- {m}")).collect();
+        format!("Earlier in this response:\n{}\n\nText:\n{window}", earlier.join("\n"))
     }
 
     /// Adds generated text. Returns what can be released, warned or blocked so far.
@@ -187,10 +379,14 @@ impl Guard {
         let release = if last { cut } else { release_point(&norm, window, self.seg.overlap) };
 
         let mut blocks = Vec::new();
+        let mut identifies = Vec::new();
         for d in self.detectors.scan(&norm.text) {
             let (start, end) = norm.original_span(d.start, d.end);
             if !last && d.end == norm.text.len() && start >= release {
                 continue; // judged next segment, with its full context
+            }
+            if matches!(d.category, Category::Contact | Category::EmployeeRef) {
+                identifies.push(excerpt_around(window, start, end));
             }
             let action = self.policy.action(d.category);
             if action == Action::Off {
@@ -221,16 +417,36 @@ impl Guard {
         if !blocks.is_empty() {
             events.push(Event::Block(blocks));
             if self.mode == Mode::Filter {
-                self.blocked = true;
-                self.buf.clear();
+                self.stop();
                 return;
             }
         }
 
-        if release > 0 {
-            events.push(Event::Release(self.buf[..release].to_string()));
-            self.buf.drain(..release);
-            self.base += release;
+        let questions = if self.decider.is_some() { self.policy.questions() } else { Vec::new() };
+        let ask = !questions.is_empty() && (release > 0 || last);
+        // Ask with what was known before this segment; its own identifiers are in its text.
+        let pending = ask.then(|| {
+            let window = window.to_string();
+            let input = DeciderInput { state: self.decider_state(&window), questions };
+            (window, input)
+        });
+        for excerpt in identifies {
+            self.remember(&excerpt);
+        }
+
+        let text = self.buf[..release].to_string();
+        self.buf.drain(..release);
+        let start = self.base;
+        self.base += release;
+        if let Some((window, input)) = pending {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.pending.push_back(Pending { id, text, end: start + window.len(), window, start, verdict: None });
+            events.push(Event::SegmentReady(id, input));
+        } else if let Some(back) = self.pending.back_mut() {
+            back.text.push_str(&text); // keep order behind segments still waiting
+        } else if !text.is_empty() {
+            events.push(Event::Release(text));
         }
         self.checked = cut - release;
         self.first = false;
@@ -244,6 +460,14 @@ impl Guard {
         mac.update(matched.as_bytes());
         Some(mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect())
     }
+}
+
+/// Up to `MEMORY_BYTES` of text centred on a match.
+fn excerpt_around(window: &str, start: usize, end: usize) -> String {
+    let pad = MEMORY_BYTES.saturating_sub(end - start) / 2;
+    let from = floor_boundary(window, start.saturating_sub(pad));
+    let to = ceil_boundary(window, (end + pad).min(window.len()));
+    window[from..to].to_string()
 }
 
 /// Where to cut the release so that at least `overlap` normalized bytes stay
@@ -369,5 +593,114 @@ mod tests {
     fn rejects_unsafe_segment_sizes() {
         let seg = SegmentConfig { overlap: 10, ..Default::default() };
         assert!(seg.validate().is_err());
+    }
+
+    // ---- decider mode ----
+
+    fn decider_guard(audience: Audience, on_error: OnError) -> Guard {
+        let policy = Policy::new(Rules::builtin(), audience, Default::default());
+        Guard::new(policy, Detectors::new(Allow::default(), vec![]), SegmentConfig::default(), Mode::Filter, None)
+            .unwrap()
+            .with_decider(on_error)
+    }
+
+    fn released(events: &[Event]) -> String {
+        events.iter().filter_map(|e| if let Event::Release(s) = e { Some(s.as_str()) } else { None }).collect()
+    }
+
+    fn asked(events: &[Event]) -> Vec<(SegmentId, DeciderInput)> {
+        events
+            .iter()
+            .filter_map(|e| if let Event::SegmentReady(id, i) = e { Some((*id, i.clone())) } else { None })
+            .collect()
+    }
+
+    const REPORT: &str = "The crew isolated the conveyor before cleaning it. ";
+
+    #[test]
+    fn nothing_is_released_before_its_verdict_and_order_is_kept() {
+        let mut g = decider_guard(Audience::Site, OnError::Block);
+        let text = REPORT.repeat(30);
+        let mut events = g.push(&text);
+        events.extend(g.finish());
+        assert_eq!(released(&events), "");
+        let ids: Vec<SegmentId> = asked(&events).into_iter().map(|(id, _)| id).collect();
+        assert!(ids.len() >= 3);
+
+        // Answer every segment but the first: still nothing may be released.
+        let mut out = Vec::new();
+        for id in ids.iter().rev().take(ids.len() - 1) {
+            out.extend(g.verdict(*id, Verdict::default()));
+        }
+        assert_eq!(released(&out), "");
+        // The first answer releases everything, in order.
+        out.extend(g.verdict(ids[0], Verdict::default()));
+        assert_eq!(released(&out), text);
+        assert!(g.is_idle());
+    }
+
+    #[test]
+    fn jev_block_withholds_its_segment() {
+        let mut g = decider_guard(Audience::Site, OnError::Block);
+        let mut events = g.push("Maria from night shift had a needlestick injury on Tuesday.");
+        events.extend(g.finish());
+        let (id, input) = asked(&events).remove(0);
+        assert!(input.questions.iter().any(|(c, _)| *c == Category::PrivacyCase));
+        let out = g.verdict(id, Verdict(vec![(Category::PrivacyCase, 0.93), (Category::PersonIdentity, 0.2)]));
+        assert_eq!(released(&out), "");
+        let Some(Event::Block(f)) = out.last() else { panic!("{out:?}") };
+        assert_eq!((f[0].category, f[0].source.as_str(), f[0].probability), (Category::PrivacyCase, "jev", Some(0.93)));
+        assert!(g.is_blocked());
+    }
+
+    #[test]
+    fn jev_warn_and_below_threshold() {
+        let mut g = decider_guard(Audience::Site, OnError::Block);
+        let text = "The supervisor was disciplined after the forklift incident.";
+        let mut events = g.push(text);
+        events.extend(g.finish());
+        let (id, _) = asked(&events).remove(0);
+        let out = g.verdict(id, Verdict(vec![(Category::FaultOrDiscipline, 0.9), (Category::WorkerHealth, 0.3)]));
+        assert_eq!(released(&out), text);
+        let warns: Vec<Category> =
+            out.iter().filter_map(|e| if let Event::Warn(f) = e { Some(f.category) } else { None }).collect();
+        assert_eq!(warns, [Category::FaultOrDiscipline]);
+    }
+
+    #[test]
+    fn decider_failure_blocks_or_falls_back() {
+        let mut g = decider_guard(Audience::Site, OnError::Block);
+        let events = [g.push(REPORT), g.finish()].concat();
+        let (id, _) = asked(&events).remove(0);
+        assert_eq!(g.decider_failed(id), [Event::DeciderFailed { fatal: true }]);
+        assert!(g.is_blocked());
+
+        let mut g = decider_guard(Audience::Site, OnError::LocalOnly);
+        let events = [g.push(REPORT), g.finish()].concat();
+        let (id, _) = asked(&events).remove(0);
+        let out = g.decider_failed(id);
+        assert_eq!(out, [Event::DeciderFailed { fatal: false }, Event::Release(REPORT.into())]);
+    }
+
+    #[test]
+    fn later_segments_carry_who_the_text_is_about() {
+        let mut g = decider_guard(Audience::Investigation, OnError::Block);
+        let first = "Witness statement from dave.miller@acme-corp.com about the fall. ";
+        let mut events = g.push(&format!("{first}{}", REPORT.repeat(12)));
+        events.extend(g.finish());
+        let inputs = asked(&events);
+        assert!(!inputs[0].1.state.starts_with("Earlier"), "memory must not include the segment's own text");
+        let later = &inputs.last().unwrap().1.state;
+        assert!(later.starts_with("Earlier in this response:\n- "), "{later}");
+        assert!(later.contains("dave.miller@acme-corp.com"));
+    }
+
+    #[test]
+    fn local_block_does_not_wait_for_the_decider() {
+        let mut g = decider_guard(Audience::Site, OnError::Block);
+        let events = g.push("Card 4556 7375 8689 9855 was used.");
+        let events = [events, g.finish()].concat();
+        assert!(events.iter().any(|e| matches!(e, Event::Block(_))));
+        assert!(asked(&events).is_empty());
     }
 }

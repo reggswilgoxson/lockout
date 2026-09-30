@@ -28,3 +28,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test (including the exhaustive holdback test)
         run: cargo test --workspace -- --include-ignored
+      - name: eval (offline, from recorded Jev answers)
+        if: matrix.os == 'ubuntu-latest' && hashFiles('bench/recordings.jsonl') != ''
+        run: cargo run -q -p lockout-ai -- eval --replay bench/recordings.jsonl

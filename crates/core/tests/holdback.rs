@@ -2,6 +2,7 @@
 //! however the stream is chunked and wherever it falls relative to segment
 //! boundaries.
 
+use lockout_ai_core::guard::{OnError, Verdict};
 use lockout_ai_core::{Allow, Audience, Detectors, Event, Guard, Mode, Policy, Rules, SegmentConfig};
 use proptest::prelude::*;
 use std::sync::LazyLock;
@@ -56,7 +57,7 @@ fn stream(seg: SegmentConfig, chunks: &[&str]) -> (String, bool) {
         match e {
             Event::Release(s) => out.push_str(&s),
             Event::Block(_) => blocked = true,
-            Event::Warn(_) => {}
+            _ => {}
         }
     }
     (out, blocked)
@@ -163,6 +164,44 @@ proptest! {
         chunks.push(&text[last..]);
         let (out, blocked) = stream(seg, &chunks);
         prop_assert!(!blocked);
+        prop_assert_eq!(out, text);
+    }
+
+    #[test]
+    fn decider_mode_keeps_order_whatever_order_verdicts_arrive(
+        pad in 0usize..3000,
+        cuts in prop::collection::vec(0usize..4000, 0..20),
+        order in prop::collection::vec(any::<u32>(), 0..64),
+    ) {
+        let policy = Policy::new(RULES.clone(), Audience::Site, Default::default());
+        let mut g = Guard::new(policy, DETECTORS.clone(), SegmentConfig::default(), Mode::Filter, None)
+            .unwrap()
+            .with_decider(OnError::Block);
+        let text: String = FILLER.chars().cycle().take(pad).collect();
+        let mut points: Vec<usize> = cuts.into_iter().map(|c| c % (text.len() + 1)).collect();
+        points.sort_unstable();
+        points.dedup();
+        let mut events = Vec::new();
+        let mut last = 0;
+        for p in points.into_iter().chain([text.len()]) {
+            events.extend(g.push(&text[last..p]));
+            last = p;
+        }
+        events.extend(g.finish());
+        let mut ids: Vec<u64> = events.iter().filter_map(|e| if let Event::SegmentReady(id, _) = e { Some(*id) } else { None }).collect();
+        // Shuffle the answer order deterministically from `order`.
+        for (i, r) in order.iter().enumerate() {
+            if ids.len() > 1 {
+                let a = i % ids.len();
+                let b = *r as usize % ids.len();
+                ids.swap(a, b);
+            }
+        }
+        for id in ids {
+            events.extend(g.verdict(id, Verdict::default()));
+        }
+        let out: String = events.iter().filter_map(|e| if let Event::Release(s) = e { Some(s.as_str()) } else { None }).collect();
+        prop_assert!(g.is_idle());
         prop_assert_eq!(out, text);
     }
 }

@@ -3,8 +3,15 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
+/// The binary, isolated from any Jev settings in the developer's environment.
+fn bin() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lockout"));
+    cmd.env_remove("JEV_API_KEY").env_remove("JEV_URL");
+    cmd
+}
+
 fn lockout(args: &[&str], stdin: &[u8]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lockout"))
+    let mut child = bin()
         .args(args)
         .current_dir(env!("CARGO_TARGET_TMPDIR"))
         .stdin(Stdio::piped())
@@ -100,10 +107,7 @@ fn config_identifiers_allowlist_and_fail_on_warn() {
 
 #[test]
 fn test_command_prints_a_human_report() {
-    let o = Command::new(env!("CARGO_BIN_EXE_lockout"))
-        .args(["test", "--jev", "off", "Her NI number is AB 12 34 56 C."])
-        .output()
-        .unwrap();
+    let o = bin().args(["test", "--jev", "off", "Her NI number is AB 12 34 56 C."]).output().unwrap();
     assert_eq!(o.status.code(), Some(3));
     let out = stdout(&o);
     assert!(out.starts_with("BLOCK  government_id"), "{out}");

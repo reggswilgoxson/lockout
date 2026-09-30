@@ -147,6 +147,12 @@ pub struct CategoryRule {
     pub investigation: Action,
     pub site: Action,
     pub public: Action,
+    /// Jev probability at or above which a `block` category blocks.
+    #[serde(default)]
+    pub block_threshold: Option<f32>,
+    /// Jev probability at or above which a finding is reported as a warning.
+    #[serde(default)]
+    pub warn_threshold: Option<f32>,
 }
 
 impl CategoryRule {
@@ -164,7 +170,41 @@ impl CategoryRule {
 #[serde(deny_unknown_fields)]
 pub struct Rules {
     pub version: u32,
+    pub thresholds: Thresholds,
     pub categories: BTreeMap<Category, CategoryRule>,
+}
+
+/// Default Jev probability thresholds.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Thresholds {
+    pub block: f32,
+    pub warn: f32,
+}
+
+/// One category's row in an audience table file. Every key is optional.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TableRow {
+    pub investigation: Option<Action>,
+    pub site: Option<Action>,
+    pub public: Option<Action>,
+    pub block_threshold: Option<f32>,
+    pub warn_threshold: Option<f32>,
+}
+
+/// An audience table: per category, what each audience gets, and optional
+/// thresholds. Overrides the built-in rules; see `audience.toml`.
+pub type AudienceTable = BTreeMap<Category, TableRow>;
+
+fn check_thresholds(what: &str, block: f32, warn: f32) -> Result<(), String> {
+    if !(0.0..=1.0).contains(&block) || !(0.0..=1.0).contains(&warn) {
+        return Err(format!("{what}: thresholds must be between 0 and 1"));
+    }
+    if warn > block {
+        return Err(format!("{what}: warn_threshold must not be above block_threshold"));
+    }
+    Ok(())
 }
 
 const BUILTIN_RULES: &str = include_str!("../rules/ehs.toml");
@@ -183,7 +223,41 @@ impl Rules {
         if let Some(missing) = Category::ALL.iter().find(|c| !rules.categories.contains_key(c)) {
             return Err(format!("rules are missing category `{missing}`"));
         }
+        rules.validate()?;
         Ok(rules)
+    }
+
+    /// Parses an audience table file and applies it on top of these rules.
+    pub fn apply_table_source(&mut self, src: &str) -> Result<(), String> {
+        let table: AudienceTable = toml::from_str(src).map_err(|e| e.to_string())?;
+        self.apply_table(&table)
+    }
+
+    pub fn apply_table(&mut self, table: &AudienceTable) -> Result<(), String> {
+        for (category, row) in table {
+            let rule = self.categories.get_mut(category).expect("every category has a rule");
+            rule.investigation = row.investigation.unwrap_or(rule.investigation);
+            rule.site = row.site.unwrap_or(rule.site);
+            rule.public = row.public.unwrap_or(rule.public);
+            rule.block_threshold = row.block_threshold.or(rule.block_threshold);
+            rule.warn_threshold = row.warn_threshold.or(rule.warn_threshold);
+        }
+        self.validate()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        check_thresholds("thresholds", self.thresholds.block, self.thresholds.warn)?;
+        for c in Category::ALL {
+            let (block, warn) = self.thresholds(c);
+            check_thresholds(c.as_str(), block, warn)?;
+        }
+        Ok(())
+    }
+
+    /// (block, warn) thresholds for a category.
+    pub fn thresholds(&self, category: Category) -> (f32, f32) {
+        let rule = self.get(category);
+        (rule.block_threshold.unwrap_or(self.thresholds.block), rule.warn_threshold.unwrap_or(self.thresholds.warn))
     }
 
     pub fn get(&self, category: Category) -> &CategoryRule {
@@ -215,6 +289,20 @@ impl Policy {
     pub fn citations(&self, category: Category) -> &[String] {
         &self.rules.get(category).citations
     }
+
+    /// (block, warn) Jev probability thresholds for a category.
+    pub fn thresholds(&self, category: Category) -> (f32, f32) {
+        self.rules.thresholds(category)
+    }
+
+    /// The questions to ask Jev: every category that has one and is not `off`.
+    pub fn questions(&self) -> Vec<(Category, String)> {
+        Category::ALL
+            .into_iter()
+            .filter(|c| self.action(*c) != Action::Off)
+            .filter_map(|c| self.rules.get(c).question.clone().map(|q| (c, q)))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +324,42 @@ mod tests {
             let r = rules.get(c);
             assert!(r.investigation <= r.site && r.site <= r.public, "{c} gets looser with a wider audience");
         }
+    }
+
+    #[test]
+    fn audience_table_overrides_actions_and_thresholds() {
+        let mut rules = Rules::builtin();
+        rules
+            .apply_table_source(
+                "[worker_health]\ninvestigation = \"off\"\nblock_threshold = 0.9\n\n[contact]\nsite = \"warn\"\n",
+            )
+            .unwrap();
+        assert_eq!(rules.get(Category::WorkerHealth).investigation, Action::Off);
+        assert_eq!(rules.get(Category::WorkerHealth).site, Action::Block);
+        assert_eq!(rules.thresholds(Category::WorkerHealth), (0.9, 0.5));
+        assert_eq!(rules.get(Category::Contact).site, Action::Warn);
+    }
+
+    #[test]
+    fn audience_table_rejects_mistakes() {
+        for bad in [
+            "[workers_health]\nsite = \"block\"",
+            "[contact]\nsite = \"blocked\"",
+            "[contact]\nsight = \"block\"",
+            "[contact]\nwarn_threshold = 0.9\nblock_threshold = 0.5",
+            "[contact]\nblock_threshold = 80",
+        ] {
+            assert!(Rules::builtin().apply_table_source(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn questions_skip_off_and_local_only_categories() {
+        let p = Policy::new(Rules::builtin(), Audience::Investigation, Default::default());
+        let asked: Vec<Category> = p.questions().into_iter().map(|(c, _)| c).collect();
+        assert!(asked.contains(&Category::WorkerHealth));
+        assert!(!asked.contains(&Category::PersonIdentity)); // off for investigation
+        assert!(!asked.contains(&Category::GovernmentId)); // local rules only
     }
 
     #[test]
